@@ -2,40 +2,44 @@ import os
 import subprocess
 import tempfile
 from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.utils import ImageReader
+from reportlab.lib.pagesizes import A4, letter
+from reportlab.lib.units import inch
 from PIL import Image
 import io
 import re
 
 def compress_pdf(input_path, output_path, quality_level=0.5):
-    """Compress PDF file using aggressive settings"""
+    """Compress PDF file using multi-pass compression with Ghostscript and qpdf"""
     try:
         if input_path.lower().endswith(".pdf"):
             # Create temporary files
             temp_dir = tempfile.mkdtemp()
-            temp_output = os.path.join(temp_dir, "temp.pdf")
+            temp1 = os.path.join(temp_dir, "1.pdf")
+            temp2 = os.path.join(temp_dir, "2.pdf")
             
-            # Aggressive Ghostscript compression
+            # First pass: Extreme compression with Ghostscript
             subprocess.run([
-                "gs", "-sDEVICE=pdfwrite",
-                "-dCompatibilityLevel=1.4",
+                "gs",
+                "-sDEVICE=pdfwrite",
+                "-dNOPAUSE",
+                "-dBATCH",
+                "-dQUIET",
                 "-dPDFSETTINGS=/screen",
-                "-dNOPAUSE", "-dQUIET", "-dBATCH",
+                "-dCompatibilityLevel=1.4",
                 "-dDownsampleColorImages=true",
-                "-dColorImageResolution=50",
                 "-dDownsampleGrayImages=true",
-                "-dGrayImageResolution=50",
                 "-dDownsampleMonoImages=true",
-                "-dMonoImageResolution=50",
+                "-dColorImageResolution=10",
+                "-dGrayImageResolution=10",
+                "-dMonoImageResolution=10",
                 "-dEmbedAllFonts=false",
                 "-dSubsetFonts=true",
                 "-dCompressFonts=true",
-                f"-sOutputFile={temp_output}",
+                f"-sOutputFile={temp1}",
                 input_path
             ], check=True)
             
-            # QPDF optimization
+            # Second pass: Maximum compression with qpdf
             subprocess.run([
                 "qpdf",
                 "--object-streams=generate",
@@ -43,56 +47,72 @@ def compress_pdf(input_path, output_path, quality_level=0.5):
                 "--compression-level=9",
                 "--recompress-flate",
                 "--optimize-images",
-                temp_output,
-                output_path
+                "--linearize",
+                temp1,
+                temp2
+            ], check=True)
+            
+            # Final pass: Additional Ghostscript optimization
+            subprocess.run([
+                "gs",
+                "-sDEVICE=pdfwrite",
+                "-dCompatibilityLevel=1.4",
+                "-dPDFSETTINGS=/screen",
+                "-dNOPAUSE",
+                "-dQUIET",
+                "-dBATCH",
+                "-dFastWebView=true",
+                f"-sOutputFile={output_path}",
+                temp2
             ], check=True)
             
             # Clean up temp files
-            if os.path.exists(temp_output):
-                os.remove(temp_output)
+            for f in [temp1, temp2]:
+                if os.path.exists(f):
+                    os.remove(f)
             os.rmdir(temp_dir)
             
         elif input_path.lower().endswith(".html"):
-            # Convert HTML to PDF first
+            # Convert HTML to PDF first with minimal settings
             temp_pdf = output_path + ".temp.pdf"
-            c = canvas.Canvas(temp_pdf, pagesize=A4)
-            width, height = A4
+            page_width = 3 * inch
+            page_height = 4 * inch
+            c = canvas.Canvas(temp_pdf, pagesize=(page_width, page_height))
             
             with open(input_path, "r") as html_file:
                 content = html_file.read()
                 
                 # Process text content
-                text = content.replace("<", " <").replace(">", "> ")
+                text = content.replace("<", " ").replace(">", " ")
                 text = re.sub(r"<style>.*?</style>", "", text, flags=re.DOTALL)
                 text = re.sub(r"<script>.*?</script>", "", text, flags=re.DOTALL)
                 text = re.sub(r"<[^>]+>", " ", text)
+                text = re.sub(r"\s+", " ", text).strip()
                 
-                # Write text with minimal settings
-                y = height - 30
-                font_size = 6  # Very small font
-                line_spacing = font_size
-                c.setFont("Helvetica", font_size)
+                y = page_height - 5
+                font_size = 3
+                line_spacing = font_size * 0.7
+                c.setFont("Courier", font_size)
                 
-                for line in text.split("\n"):
-                    if line.strip():
-                        if y < 30:
+                words = text.split()
+                line = []
+                for word in words:
+                    line.append(word)
+                    if len("".join(line)) > 25:
+                        if y < 5:
                             c.showPage()
-                            y = height - 30
-                            c.setFont("Helvetica", font_size)
-                        
-                        words = line.split()
-                        line_buffer = []
-                        for word in words:
-                            line_buffer.append(word)
-                            test_line = " ".join(line_buffer)
-                            if c.stringWidth(test_line) > width - 40:
-                                c.drawString(20, y, " ".join(line_buffer[:-1]))
-                                y -= line_spacing
-                                line_buffer = [word]
-                        
-                        if line_buffer:
-                            c.drawString(20, y, " ".join(line_buffer))
-                            y -= line_spacing
+                            y = page_height - 5
+                            c.setFont("Courier", font_size)
+                        c.drawString(3, y, "".join(line[:-1]))
+                        y -= line_spacing
+                        line = [word]
+                
+                if line:
+                    if y < 5:
+                        c.showPage()
+                        y = page_height - 5
+                        c.setFont("Courier", font_size)
+                    c.drawString(3, y, "".join(line))
             
             c.save()
             
